@@ -410,6 +410,160 @@ namespace Azure.DataApiBuilder.Service.Tests.CosmosTests
         }
 
         /// <summary>
+        /// Tests caseInsensitive eq of StringFilterInput. The expected SQL uses
+        /// Cosmos' native StringEquals(a, b, true) built-in which matches
+        /// regardless of character case.
+        /// </summary>
+        [TestMethod]
+        public async Task TestStringFiltersEqCaseInsensitive()
+        {
+            string gqlQuery = @"{
+                planets(first: 10, " + QueryBuilder.FILTER_FIELD_NAME +
+                @" : {name: {eq: ""endor"" caseInsensitive: true}})
+                {
+                    items {
+                        name
+                    }
+                }
+            }";
+
+            string dbQuery = "select c.name from c where StringEquals(c.name, \"endor\", true)";
+
+            await ExecuteAndValidateResult(_graphQLQueryName, gqlQuery, dbQuery);
+        }
+
+        /// <summary>
+        /// Tests caseInsensitive neq of StringFilterInput.
+        /// </summary>
+        [TestMethod]
+        public async Task TestStringFiltersNeqCaseInsensitive()
+        {
+            string gqlQuery = @"{
+                planets(first: 10, " + QueryBuilder.FILTER_FIELD_NAME +
+                @" : {name: {neq: ""endor"" caseInsensitive: true}})
+                {
+                    items {
+                        name
+                    }
+                }
+            }";
+
+            string dbQuery = "select c.name from c where NOT StringEquals(c.name, \"endor\", true)";
+
+            await ExecuteAndValidateResult(_graphQLQueryName, gqlQuery, dbQuery);
+        }
+
+        /// <summary>
+        /// Tests caseInsensitive contains of StringFilterInput using Cosmos'
+        /// CONTAINS(a, b, true) built-in. Note the substring is passed raw;
+        /// no %...% wrapping is applied.
+        /// </summary>
+        [TestMethod]
+        public async Task TestStringFiltersContainsCaseInsensitive()
+        {
+            string gqlQuery = @"{
+                planets(first: 10, " + QueryBuilder.FILTER_FIELD_NAME +
+                @" : {name: {contains: ""PI"" caseInsensitive: true}})
+                {
+                    items {
+                        name
+                    }
+                }
+            }";
+
+            string dbQuery = "select c.name from c where CONTAINS(c.name, \"PI\", true)";
+
+            await ExecuteAndValidateResult(_graphQLQueryName, gqlQuery, dbQuery);
+        }
+
+        /// <summary>
+        /// Tests caseInsensitive notContains of StringFilterInput.
+        /// </summary>
+        [TestMethod]
+        public async Task TestStringFiltersNotContainsCaseInsensitive()
+        {
+            string gqlQuery = @"{
+                planets(first: 10, " + QueryBuilder.FILTER_FIELD_NAME +
+                @" : {name: {notContains: ""PI"" caseInsensitive: true}})
+                {
+                    items {
+                        name
+                    }
+                }
+            }";
+
+            string dbQuery = "select c.name from c where NOT CONTAINS(c.name, \"PI\", true)";
+
+            await ExecuteAndValidateResult(_graphQLQueryName, gqlQuery, dbQuery);
+        }
+
+        /// <summary>
+        /// Tests caseInsensitive startsWith of StringFilterInput using Cosmos'
+        /// STARTSWITH(a, b, true) built-in.
+        /// </summary>
+        [TestMethod]
+        public async Task TestStringFiltersStartsWithCaseInsensitive()
+        {
+            string gqlQuery = @"{
+                planets(first: 10, " + QueryBuilder.FILTER_FIELD_NAME +
+                @" : {name: {startsWith: ""en"" caseInsensitive: true}})
+                {
+                    items {
+                        name
+                    }
+                }
+            }";
+
+            string dbQuery = "select c.name from c where STARTSWITH(c.name, \"en\", true)";
+
+            await ExecuteAndValidateResult(_graphQLQueryName, gqlQuery, dbQuery);
+        }
+
+        /// <summary>
+        /// Tests caseInsensitive endsWith of StringFilterInput using Cosmos'
+        /// ENDSWITH(a, b, true) built-in.
+        /// </summary>
+        [TestMethod]
+        public async Task TestStringFiltersEndsWithCaseInsensitive()
+        {
+            string gqlQuery = @"{
+                planets(first: 10, " + QueryBuilder.FILTER_FIELD_NAME +
+                @" : {name: {endsWith: ""H"" caseInsensitive: true}})
+                {
+                    items {
+                        name
+                    }
+                }
+            }";
+
+            string dbQuery = "select c.name from c where ENDSWITH(c.name, \"H\", true)";
+
+            await ExecuteAndValidateResult(_graphQLQueryName, gqlQuery, dbQuery);
+        }
+
+        /// <summary>
+        /// Tests that caseInsensitive: false preserves the original
+        /// case-sensitive behavior (emits `=` rather than StringEquals).
+        /// </summary>
+        [TestMethod]
+        public async Task TestStringFiltersEqCaseInsensitiveFalse()
+        {
+            string gqlQuery = @"{
+                planets(first: 10, " + QueryBuilder.FILTER_FIELD_NAME +
+                @" : {name: {eq: ""Endor"" caseInsensitive: false}})
+                {
+                    items {
+                        name
+                    }
+                }
+            }";
+
+            string dbQuery = "select c.name from c where c.name = \"Endor\"";
+
+            await ExecuteAndValidateResult(_graphQLQueryName, gqlQuery, dbQuery);
+        }
+
+        /// <summary>
         /// Tests that special characters are escaped in operations involving LIKE
         /// Special chars not working so ignoring for now!
         /// </summary>

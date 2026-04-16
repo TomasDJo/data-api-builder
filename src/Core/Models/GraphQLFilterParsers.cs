@@ -633,9 +633,36 @@ public static class FieldFilterParser
         List<PredicateOperand> predicates = new();
 
         InputObjectType argumentObject = ExecutionHelper.InputObjectTypeFromIInputField(argumentSchema);
+
+        // caseInsensitive is a sibling modifier alongside operator fields (eq, contains, ...).
+        // Extract it up front so every operator on this filter input sees the same value.
+        bool caseInsensitive = false;
+        foreach (ObjectFieldNode field in fields)
+        {
+            if (field.Name.Value == "caseInsensitive")
+            {
+                object? ciValue = ExecutionHelper.ExtractValueFromIValueNode(
+                    value: field.Value,
+                    argumentSchema: argumentObject.Fields[field.Name.Value],
+                    variables: ctx.Variables);
+
+                if (ciValue is bool b)
+                {
+                    caseInsensitive = b;
+                }
+            }
+        }
+
         foreach (ObjectFieldNode field in fields)
         {
             string name = field.Name.ToString();
+
+            if (name == "caseInsensitive")
+            {
+                // Not an operator — already consumed above.
+                continue;
+            }
+
             object? value = ExecutionHelper.ExtractValueFromIValueNode(
                 value: field.Value,
                 argumentSchema: argumentObject.Fields[field.Name.Value],
@@ -653,10 +680,10 @@ public static class FieldFilterParser
             switch (name)
             {
                 case "eq":
-                    op = PredicateOperation.Equal;
+                    op = caseInsensitive ? PredicateOperation.CI_STRING_EQUALS : PredicateOperation.Equal;
                     break;
                 case "neq":
-                    op = PredicateOperation.NotEqual;
+                    op = caseInsensitive ? PredicateOperation.CI_NOT_STRING_EQUALS : PredicateOperation.NotEqual;
                     break;
                 case "lt":
                     op = PredicateOperation.LessThan;
@@ -684,6 +711,12 @@ public static class FieldFilterParser
                     {
                         op = PredicateOperation.ARRAY_CONTAINS;
                     }
+                    else if (caseInsensitive)
+                    {
+                        // Cosmos native CONTAINS(a, b, true) — no %...% wrapping.
+                        op = PredicateOperation.CI_CONTAINS;
+                        lengthOverride = true;
+                    }
                     else
                     {
                         op = PredicateOperation.LIKE;
@@ -697,6 +730,11 @@ public static class FieldFilterParser
                     {
                         op = PredicateOperation.NOT_ARRAY_CONTAINS;
                     }
+                    else if (caseInsensitive)
+                    {
+                        op = PredicateOperation.CI_NOT_CONTAINS;
+                        lengthOverride = true;
+                    }
                     else
                     {
                         op = PredicateOperation.NOT_LIKE;
@@ -706,14 +744,32 @@ public static class FieldFilterParser
 
                     break;
                 case "startsWith":
-                    op = PredicateOperation.LIKE;
-                    value = $"{EscapeLikeString((string)value)}%";
-                    lengthOverride = true;
+                    if (caseInsensitive)
+                    {
+                        op = PredicateOperation.CI_STARTS_WITH;
+                        lengthOverride = true;
+                    }
+                    else
+                    {
+                        op = PredicateOperation.LIKE;
+                        value = $"{EscapeLikeString((string)value)}%";
+                        lengthOverride = true;
+                    }
+
                     break;
                 case "endsWith":
-                    op = PredicateOperation.LIKE;
-                    value = $"%{EscapeLikeString((string)value)}";
-                    lengthOverride = true;
+                    if (caseInsensitive)
+                    {
+                        op = PredicateOperation.CI_ENDS_WITH;
+                        lengthOverride = true;
+                    }
+                    else
+                    {
+                        op = PredicateOperation.LIKE;
+                        value = $"%{EscapeLikeString((string)value)}";
+                        lengthOverride = true;
+                    }
+
                     break;
                 case "isNull":
                     processLiteral = false;
