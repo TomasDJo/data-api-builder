@@ -1,6 +1,6 @@
 # Version values referenced from https://hub.docker.com/_/microsoft-dotnet-aspnet
 
-FROM mcr.microsoft.com/dotnet/sdk:8.0-cbl-mariner2.0. AS build
+FROM mcr.microsoft.com/dotnet/sdk:8.0-cbl-mariner2.0 AS build
 
 
 WORKDIR /src
