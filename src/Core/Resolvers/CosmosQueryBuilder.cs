@@ -137,6 +137,10 @@ namespace Azure.DataApiBuilder.Core.Resolvers
                 {
                     predicateString = $" {Build(predicate.Op)} ( {ResolveOperand(predicate.Left)}, {ResolveOperand(predicate.Right)})";
                 }
+                else if (TryBuildCaseInsensitive(predicate, out string? ciPredicate))
+                {
+                    predicateString = ciPredicate!;
+                }
                 else if (ResolveOperand(predicate.Right).Equals(GQLFilterParser.NullStringValue))
                 {
                     // For Binary predicates:
@@ -160,6 +164,42 @@ namespace Azure.DataApiBuilder.Core.Resolvers
             else
             {
                 return predicateString;
+            }
+        }
+
+        /// <summary>
+        /// Emits Cosmos SQL for case-insensitive string operators using native
+        /// built-ins (StringEquals, CONTAINS, STARTSWITH, ENDSWITH) with the
+        /// optional ignoreCase=true argument. Returns false for any non-CI op.
+        /// </summary>
+        private bool TryBuildCaseInsensitive(Predicate predicate, out string? predicateString)
+        {
+            string left = ResolveOperand(predicate.Left);
+            string right = ResolveOperand(predicate.Right);
+
+            switch (predicate.Op)
+            {
+                case PredicateOperation.CI_STRING_EQUALS:
+                    predicateString = $"StringEquals({left}, {right}, true)";
+                    return true;
+                case PredicateOperation.CI_NOT_STRING_EQUALS:
+                    predicateString = $"NOT StringEquals({left}, {right}, true)";
+                    return true;
+                case PredicateOperation.CI_CONTAINS:
+                    predicateString = $"CONTAINS({left}, {right}, true)";
+                    return true;
+                case PredicateOperation.CI_NOT_CONTAINS:
+                    predicateString = $"NOT CONTAINS({left}, {right}, true)";
+                    return true;
+                case PredicateOperation.CI_STARTS_WITH:
+                    predicateString = $"STARTSWITH({left}, {right}, true)";
+                    return true;
+                case PredicateOperation.CI_ENDS_WITH:
+                    predicateString = $"ENDSWITH({left}, {right}, true)";
+                    return true;
+                default:
+                    predicateString = null;
+                    return false;
             }
         }
 

@@ -177,7 +177,13 @@ public enum PredicateOperation
     None,
     Equal, GreaterThan, LessThan, GreaterThanOrEqual, LessThanOrEqual, NotEqual,
     AND, OR, LIKE, NOT_LIKE,
-    IS, IS_NOT, EXISTS, ARRAY_CONTAINS, NOT_ARRAY_CONTAINS, IN
+    IS, IS_NOT, EXISTS, ARRAY_CONTAINS, NOT_ARRAY_CONTAINS, IN,
+    // Case-insensitive string operations. Emitted when `caseInsensitive: true`
+    // is supplied on a string filter. Currently only the Cosmos NoSQL query
+    // builder knows how to render these; SQL providers will reject them.
+    CI_STRING_EQUALS, CI_NOT_STRING_EQUALS,
+    CI_CONTAINS, CI_NOT_CONTAINS,
+    CI_STARTS_WITH, CI_ENDS_WITH
 }
 
 /// <summary>
