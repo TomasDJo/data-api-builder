@@ -47,6 +47,8 @@ namespace Azure.DataApiBuilder.Service.GraphQLBuilder.Queries
         private static readonly StringValueNode _endsWithDescription = new("Ends With");
         private static readonly NameNode _in = new("in");
         private static readonly StringValueNode _inDescription = new("In");
+        private static readonly NameNode _caseInsensitive = new("caseInsensitive");
+        private static readonly StringValueNode _caseInsensitiveDescription = new("Apply string comparisons case-insensitively (currently supported only by the CosmosDB NoSQL provider)");
 
         private static InputObjectTypeDefinitionNode IdInputType() =>
             CreateSimpleEqualsFilter("IdFilterInput", "Input type for adding ID filters", _id);
@@ -153,7 +155,8 @@ namespace Azure.DataApiBuilder.Service.GraphQLBuilder.Queries
                     new(null, _endsWith, _endsWithDescription, type, null, []),
                     new(null, _neq, _neqDescription, type, null, []),
                     new(null, _isNull, _isNullDescription, _boolean, null, []),
-                    new(null, _in, _inDescription, new ListTypeNode(type), null, [])
+                    new(null, _in, _inDescription, new ListTypeNode(type), null, []),
+                    new(null, _caseInsensitive, _caseInsensitiveDescription, _boolean, null, [])
                 ]
             );
 
