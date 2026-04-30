@@ -11,6 +11,80 @@ namespace Azure.DataApiBuilder.Core.Resolvers
     {
         private readonly string _containerAlias = "c";
 
+        // Cosmos NoSQL query language reserved keywords. When a JSON property
+        // name matches one of these, dot notation (c.from) is rejected by the
+        // service with a syntax error; bracket notation (c["from"]) must be used
+        // instead. Matched case-insensitively.
+        // Reference: https://learn.microsoft.com/azure/cosmos-db/nosql/query/keywords
+        private static readonly HashSet<string> CosmosSqlReservedKeywords = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "ALL", "AND", "ANY", "ARRAY", "AS", "ASC", "AVG",
+            "BETWEEN", "BY",
+            "CASE", "CAST", "COLLATE", "COUNT", "CROSS",
+            "DESC", "DISTINCT",
+            "ELSE", "END", "EXCEPT", "EXISTS",
+            "FALSE", "FROM", "FULL",
+            "GROUP",
+            "HAVING",
+            "IN", "INNER", "INTERSECT", "INTO", "IS",
+            "JOIN",
+            "LEFT", "LIKE", "LIMIT",
+            "MAX", "MIN",
+            "NOT", "NULL",
+            "OFFSET", "ON", "OR", "ORDER", "OUTER",
+            "RIGHT",
+            "SELECT", "SUM",
+            "TABLE", "THEN", "TOP", "TRUE",
+            "UNION",
+            "UNDEFINED", "UNIQUE",
+            "VALUE",
+            "WHEN", "WHERE", "WITH"
+        };
+
+        /// <summary>
+        /// Formats a JSON property access on the given alias, picking dot or
+        /// bracket notation according to Cosmos NoSQL identifier rules. Bracket
+        /// notation is required when the property name matches a reserved
+        /// keyword, contains characters outside [A-Za-z0-9_], or starts with a
+        /// digit.
+        /// </summary>
+        internal static string FormatPropertyAccess(string alias, string propertyName)
+        {
+            return RequiresBracketNotation(propertyName)
+                ? $"{alias}[\"{propertyName.Replace("\\", "\\\\").Replace("\"", "\\\"")}\"]"
+                : $"{alias}.{propertyName}";
+        }
+
+        private static bool RequiresBracketNotation(string identifier)
+        {
+            if (string.IsNullOrEmpty(identifier))
+            {
+                return true;
+            }
+
+            if (CosmosSqlReservedKeywords.Contains(identifier))
+            {
+                return true;
+            }
+
+            char first = identifier[0];
+            if (!char.IsLetter(first) && first != '_')
+            {
+                return true;
+            }
+
+            for (int i = 1; i < identifier.Length; i++)
+            {
+                char c = identifier[i];
+                if (!char.IsLetterOrDigit(c) && c != '_')
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
         /// <summary>
         /// Builds a cosmos sql query string
         /// </summary>
@@ -50,7 +124,7 @@ namespace Azure.DataApiBuilder.Core.Resolvers
                 alias = column.TableAlias;
             }
 
-            return alias + "." + column.ColumnName;
+            return FormatPropertyAccess(alias, column.ColumnName);
         }
 
         protected override string Build(KeysetPaginationPredicate? predicate)
@@ -72,7 +146,7 @@ namespace Azure.DataApiBuilder.Core.Resolvers
             return string.Join(
                 ", ",
                 structure.Columns
-                    .Select(c => _containerAlias + "." + c.Label)
+                    .Select(c => FormatPropertyAccess(_containerAlias, c.Label))
                     .Distinct()
                 );
         }
