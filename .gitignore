@@ -38,3 +38,6 @@ dab-config*.json
 
 # Verify test files
 *.received.*
+
+# Local git worktrees
+worktrees/
