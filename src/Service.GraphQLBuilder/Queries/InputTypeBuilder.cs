@@ -11,6 +11,13 @@ namespace Azure.DataApiBuilder.Service.GraphQLBuilder.Queries
 {
     public static class InputTypeBuilder
     {
+        // Emitted on auto-generated *OrderByInput types whose source object has no
+        // scalar fields. HotChocolate refuses to build a schema where any
+        // InputObject has zero fields, and order-by is only meaningful for scalars,
+        // so we add a no-op placeholder rather than skip generation (which would
+        // break consumers that reference the input type by name).
+        internal const string SYNTHETIC_ORDER_BY_PLACEHOLDER = "_dabPlaceholder";
+
         public static void GenerateInputTypesForObjectType(ObjectTypeDefinitionNode node, IDictionary<string, InputObjectTypeDefinitionNode> inputTypes)
         {
             GenerateOrderByInputTypeForObjectType(node, inputTypes);
@@ -31,6 +38,23 @@ namespace Azure.DataApiBuilder.Service.GraphQLBuilder.Queries
         {
             List<InputValueDefinitionNode> inputFields = GenerateOrderByInputFieldsForBuiltInFields(node);
             string orderByInputName = GenerateObjectInputOrderByName(node);
+
+            // A type whose fields are all object-typed (e.g. a wrapper of nested
+            // entities) has no orderable scalars, so the input would be empty and
+            // HotChocolate would fail schema build with "InputObject has no fields
+            // declared". Emit a no-op placeholder to keep the type non-empty.
+            if (inputFields.Count == 0)
+            {
+                inputFields.Add(
+                    new(
+                        location: null,
+                        new NameNode(SYNTHETIC_ORDER_BY_PLACEHOLDER),
+                        new StringValueNode("Placeholder added because the source type has no orderable scalar fields. Has no effect when supplied."),
+                        new NamedTypeNode(OrderByType.EnumName),
+                        defaultValue: null,
+                        new List<DirectiveNode>())
+                    );
+            }
 
             // OrderBy does not include "and" and "or" input types so we add only the orderByInputName here.
             inputTypes.Add(
