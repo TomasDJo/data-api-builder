@@ -34,6 +34,10 @@
 
     <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Docker|AnyCPU'">
         <TreatWarningsAsErrors>True</TreatWarningsAsErrors>
+        <!-- NU1902 (transitive vulnerability advisory) stays a warning so newly-published
+             advisories don't break the image build mid-flight. Bump the affected package
+             as a follow-up instead of suppressing the signal entirely. -->
+        <WarningsNotAsErrors>NU1902</WarningsNotAsErrors>
     </PropertyGroup>
 
     <ItemGroup>
