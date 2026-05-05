@@ -43,6 +43,15 @@ namespace Azure.DataApiBuilder.Service.GraphQLBuilder.Queries
             // entities) has no orderable scalars, so the input would be empty and
             // HotChocolate would fail schema build with "InputObject has no fields
             // declared". Emit a no-op placeholder to keep the type non-empty.
+            //
+            // Trade-off: the placeholder is visible in introspection / the published
+            // schema document. Cleaner long-term fix is to skip emitting the empty
+            // *OrderByInput AND drop the `orderBy:` argument from any field whose
+            // target type has no orderable scalars. That requires coordinating with
+            // QueryBuilder.GenerateListQueryFields / QueryArgumentsForField (the
+            // current contract assumes every list/relationship field gets an
+            // orderBy arg of NamedType orderByInputName). Search for
+            // SYNTHETIC_ORDER_BY_PLACEHOLDER when picking this up.
             if (inputFields.Count == 0)
             {
                 inputFields.Add(
