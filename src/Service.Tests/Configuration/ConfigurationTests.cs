@@ -471,6 +471,30 @@ type Moon {
 }
 ";
 
+        // Sibling fields whose types reuse the same complex type are NOT a
+        // circular reference. The cycle-detection tracker must follow the
+        // path from root to current node, not the breadth of visited siblings.
+        // Planet -> Character (twice as siblings) -> id : terminates without cycle.
+        internal const string GRAPHQL_SCHEMA_WITH_SIBLING_TYPE_REUSE = @"
+type Character {
+    id : ID,
+    name : String
+}
+
+type Moon {
+    id : ID,
+    name : String
+}
+
+type Planet @model(name:""PlanetAlias"") {
+    id : ID!,
+    name : String,
+    primaryCharacter: Character,
+    secondaryCharacter: Character,
+    tertiaryCharacter: Character
+}
+";
+
         public const string CONFIG_FILE_WITH_NO_OPTIONAL_FIELD = @"{
                                     ""$schema"":""https://github.com/Azure/data-api-builder/releases/download/vmajor.minor.patch-alpha/dab.draft.schema.json"",
                                     ""data-source"": {
@@ -3611,6 +3635,36 @@ type Moon {
             Assert.AreEqual("Circular reference detected in the provided GraphQL schema for entity 'Character'.", exception.Message);
             Assert.AreEqual(HttpStatusCode.InternalServerError, exception.StatusCode);
             Assert.AreEqual(DataApiBuilderException.SubStatusCodes.ErrorInInitialization, exception.SubStatusCode);
+        }
+
+        /// <summary>
+        /// Sibling fields can legitimately reuse the same complex GraphQL type.
+        /// This is not a cycle and must not throw. Cycle detection is path-based,
+        /// not breadth-based.
+        /// </summary>
+        /// <exception cref="ApplicationException"></exception>
+        [TestMethod, TestCategory(TestCategory.COSMOSDBNOSQL)]
+        public void ValidateGraphQLSchemaAcceptsSiblingTypeReuse()
+        {
+            TestHelper.SetupDatabaseEnvironment(TestCategory.COSMOSDBNOSQL);
+            FileSystemRuntimeConfigLoader baseLoader = TestHelper.GetRuntimeConfigLoader();
+            if (!baseLoader.TryLoadKnownConfig(out RuntimeConfig baseConfig))
+            {
+                throw new ApplicationException("Failed to load the default CosmosDB_NoSQL config and cannot continue with tests.");
+            }
+
+            MockFileSystem fileSystem = new(new Dictionary<string, MockFileData>()
+            {
+                { @"../schema.gql", new MockFileData(GRAPHQL_SCHEMA_WITH_SIBLING_TYPE_REUSE) },
+                { DEFAULT_CONFIG_FILE_NAME, new MockFileData(baseConfig.ToJson()) }
+            });
+            FileSystemRuntimeConfigLoader loader = new(fileSystem);
+            RuntimeConfigProvider provider = new(loader);
+
+            // Constructing the provider triggers ProcessSchema. With the per-iteration
+            // tracker fix, sibling fields of the same type no longer false-positive.
+            CosmosSqlMetadataProvider metadataProvider = new(provider, fileSystem);
+            Assert.IsNotNull(metadataProvider);
         }
 
         /// <summary>

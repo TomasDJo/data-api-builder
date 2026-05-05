@@ -220,13 +220,6 @@ namespace Azure.DataApiBuilder.Core.Services.MetadataProviders
             // Traverse the fields and add them to the path
             foreach (FieldDefinitionNode field in fields)
             {
-                // Create a tracker to keep track of visited entities to detect circular references
-                HashSet<string> trackerForFields = new();
-                if (visitedEntities is not null)
-                {
-                    trackerForFields = visitedEntities;
-                }
-
                 // If the entity is build-in type, do not go further to check circular reference
                 if (GraphQLUtils.IsBuiltInType(field.Type))
                 {
@@ -237,7 +230,15 @@ namespace Azure.DataApiBuilder.Core.Services.MetadataProviders
 
                 AssertIfEntityIsAvailableInConfig(entityType);
 
-                // If the entity is already visited, then it is a circular reference
+                // Copy the parent's visited path per sibling so each branch of the
+                // recursion gets its own tracker. A type reused across siblings is
+                // not a cycle; a cycle is the same type appearing twice on the path
+                // from root to current node.
+                HashSet<string> trackerForFields = visitedEntities is not null
+                    ? new HashSet<string>(visitedEntities)
+                    : new HashSet<string>();
+
+                // If the entity is already on this path, then it is a circular reference
                 if (!trackerForFields.Add(entityType))
                 {
                     throw new DataApiBuilderException(
