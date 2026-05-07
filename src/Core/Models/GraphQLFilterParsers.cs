@@ -216,8 +216,12 @@ public class GQLFilterParser
                         }
                         else
                         {
-                            cosmosQueryStructure.DatabaseObject.Name = sourceName + "." + backingColumnName;
-                            cosmosQueryStructure.SourceAlias = sourceName + "." + backingColumnName;
+                            // Build the nested-object alias via FormatPropertyAccess so reserved
+                            // keywords (e.g. from, value) get bracket-quoted instead of producing
+                            // invalid SQL like c.from.owner.
+                            string nestedAlias = CosmosQueryBuilder.FormatPropertyAccess(sourceName, backingColumnName);
+                            cosmosQueryStructure.DatabaseObject.Name = nestedAlias;
+                            cosmosQueryStructure.SourceAlias = nestedAlias;
                             cosmosQueryStructure.EntityName = metadataProvider.GetEntityName(nestedFieldTypeName);
 
                             predicates.Push(new PredicateOperand(Parse(ctx,
@@ -318,7 +322,9 @@ public class GQLFilterParser
             queryStructure.Counter,
             predicatesForExistsQuery);
 
-        existsQuery.DatabaseObject.SchemaName = $"{queryStructure.SourceAlias}.{columnName}";
+        // Use FormatPropertyAccess so a reserved keyword in the column name (e.g. "from")
+        // gets bracket-quoted into the EXISTS subquery container alias.
+        existsQuery.DatabaseObject.SchemaName = CosmosQueryBuilder.FormatPropertyAccess(queryStructure.SourceAlias, columnName);
         existsQuery.DatabaseObject.Name = existsQuery.SourceAlias;
         existsQuery.EntityName = metadataProvider.GetEntityName(entityType);
 
