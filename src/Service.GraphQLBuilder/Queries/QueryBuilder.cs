@@ -30,12 +30,21 @@ namespace Azure.DataApiBuilder.Service.GraphQLBuilder.Queries
         public const string GROUP_BY_AGGREGATE_FIELD_ARG_NAME = "field";
         public const string GROUP_BY_AGGREGATE_FIELD_DISTINCT_NAME = "distinct";
         public const string GROUP_BY_AGGREGATE_FIELD_HAVING_NAME = "having";
+        public const string COUNT_FIELD_NAME = "count";
 
         // Define the enabled database types for aggregation
         public static readonly HashSet<DatabaseType> AggregationEnabledDatabaseTypes = new()
         {
             DatabaseType.MSSQL,
             DatabaseType.DWSQL,
+        };
+
+        // Database types that expose a top-level `count: Int!` on the *Connection
+        // return type. Lighter than full groupBy/aggregation support: gives clients
+        // the total number of matches for a filter without paginating items.
+        public static readonly HashSet<DatabaseType> CountEnabledDatabaseTypes = new()
+        {
+            DatabaseType.CosmosDB_NoSQL,
         };
 
         /// <summary>
@@ -88,8 +97,9 @@ namespace Azure.DataApiBuilder.Service.GraphQLBuilder.Queries
                     {
                         IEnumerable<string> rolesAllowedForRead = IAuthorizationResolver.GetRolesForOperation(entityName, operation: EntityActionOperation.Read, entityPermissionsMap);
                         bool isAggregationEnabledForEntity = _isAggregationEnabled && AggregationEnabledDatabaseTypes.Contains(databaseTypes[entityName]);
+                        bool isCountEnabledForEntity = CountEnabledDatabaseTypes.Contains(databaseTypes[entityName]);
 
-                        ObjectTypeDefinitionNode paginationReturnType = GenerateReturnType(name, isAggregationEnabledForEntity);
+                        ObjectTypeDefinitionNode paginationReturnType = GenerateReturnType(name, isAggregationEnabledForEntity, isCountEnabledForEntity);
 
                         if (rolesAllowedForRead.Any())
                         {
@@ -255,7 +265,7 @@ namespace Azure.DataApiBuilder.Service.GraphQLBuilder.Queries
             return objectType.Name.Value.EndsWith(PAGINATION_OBJECT_TYPE_SUFFIX);
         }
 
-        public static ObjectTypeDefinitionNode GenerateReturnType(NameNode name, bool isAggregationEnabled = false)
+        public static ObjectTypeDefinitionNode GenerateReturnType(NameNode name, bool isAggregationEnabled = false, bool isCountEnabled = false)
         {
             string scalarFieldsEnumName = EnumTypeBuilder.GenerateScalarFieldsEnumName(name.Value);
 
@@ -282,6 +292,18 @@ namespace Azure.DataApiBuilder.Service.GraphQLBuilder.Queries
                         new NonNullType(new BooleanType()).ToTypeNode(),
                         new List<DirectiveNode>())
                 };
+
+            if (isCountEnabled)
+            {
+                fields.Add(
+                    new(
+                        location: null,
+                        new NameNode(COUNT_FIELD_NAME),
+                        new StringValueNode("Total number of items that match the filter, ignoring pagination"),
+                        new List<InputValueDefinitionNode>(),
+                        new NonNullType(new IntType()).ToTypeNode(),
+                        new List<DirectiveNode>()));
+            }
 
             if (isAggregationEnabled)
             {

@@ -72,46 +72,126 @@ namespace Azure.DataApiBuilder.Core.Resolvers
             CosmosQueryStructure structure = new(context, parameters, _runtimeConfigProvider, metadataStoreProvider, _authorizationResolver, _gQLFilterParser);
             RuntimeConfig runtimeConfig = _runtimeConfigProvider.GetConfig();
 
-            string queryString = _queryBuilder.Build(structure);
-            QueryDefinition querySpec = new(queryString);
-            QueryRequestOptions queryRequestOptions = new();
-
             CosmosClient client = _clientProvider.Clients[dataSourceName];
             Container container = client.GetDatabase(structure.Database).GetContainer(structure.Container);
             (string idValue, string partitionKeyValue) = await GetIdAndPartitionKey(context, parameters, container, structure, metadataStoreProvider);
 
-            foreach (KeyValuePair<string, DbConnectionParam> parameterEntry in structure.Parameters)
-            {
-                querySpec = querySpec.WithParameter(parameterEntry.Key, parameterEntry.Value.Value);
-            }
-
-            if (!string.IsNullOrEmpty(partitionKeyValue))
-            {
-                queryRequestOptions.PartitionKey = new PartitionKey(partitionKeyValue);
-            }
+            // Skip the items query when the caller only asked for metadata on the
+            // Connection (e.g. just `count`). An empty Columns list would produce
+            // an invalid `SELECT  FROM c` statement, and the round-trip is wasted
+            // RUs regardless.
+            bool runItemsQuery = !structure.IsPaginated || structure.IsItemsRequested;
 
             JObject executeQueryResult = null;
 
-            if (runtimeConfig.CanUseCache() && runtimeConfig.Entities[structure.EntityName].IsCachingEnabled)
+            if (runItemsQuery)
             {
-                StringBuilder dataSourceKey = new(dataSourceName);
+                string queryString = _queryBuilder.Build(structure);
+                QueryDefinition querySpec = new(queryString);
+                QueryRequestOptions queryRequestOptions = new();
 
-                // to support caching for paginated query adding continuation token in the datasource
-                dataSourceKey.Append(":");
-                dataSourceKey.Append(structure.Continuation);
+                foreach (KeyValuePair<string, DbConnectionParam> parameterEntry in structure.Parameters)
+                {
+                    querySpec = querySpec.WithParameter(parameterEntry.Key, parameterEntry.Value.Value);
+                }
 
-                DatabaseQueryMetadata queryMetadata = new(queryText: queryString, dataSource: dataSourceKey.ToString(), queryParameters: structure.Parameters);
+                if (!string.IsNullOrEmpty(partitionKeyValue))
+                {
+                    queryRequestOptions.PartitionKey = new PartitionKey(partitionKeyValue);
+                }
 
-                executeQueryResult = await _cache.GetOrSetAsync<JObject>(async () => await ExecuteQueryAsync(structure, querySpec, queryRequestOptions, container, idValue, partitionKeyValue), queryMetadata, runtimeConfig.GetEntityCacheEntryTtl(entityName: structure.EntityName), runtimeConfig.GetEntityCacheEntryLevel(entityName: structure.EntityName));
+                if (runtimeConfig.CanUseCache() && runtimeConfig.Entities[structure.EntityName].IsCachingEnabled)
+                {
+                    StringBuilder dataSourceKey = new(dataSourceName);
+
+                    // to support caching for paginated query adding continuation token in the datasource
+                    dataSourceKey.Append(":");
+                    dataSourceKey.Append(structure.Continuation);
+
+                    DatabaseQueryMetadata queryMetadata = new(queryText: queryString, dataSource: dataSourceKey.ToString(), queryParameters: structure.Parameters);
+
+                    executeQueryResult = await _cache.GetOrSetAsync<JObject>(async () => await ExecuteQueryAsync(structure, querySpec, queryRequestOptions, container, idValue, partitionKeyValue), queryMetadata, runtimeConfig.GetEntityCacheEntryTtl(entityName: structure.EntityName), runtimeConfig.GetEntityCacheEntryLevel(entityName: structure.EntityName));
+                }
+                else
+                {
+                    executeQueryResult = await ExecuteQueryAsync(structure, querySpec, queryRequestOptions, container, idValue, partitionKeyValue);
+                }
             }
-            else
+
+            if (structure.IsPaginated && structure.IsCountRequested)
             {
-                executeQueryResult = await ExecuteQueryAsync(structure, querySpec, queryRequestOptions, container, idValue, partitionKeyValue);
+                long countValue = await ResolveCountAsync(structure, container, partitionKeyValue, idValue);
+                executeQueryResult ??= EmptyConnection();
+                executeQueryResult[QueryBuilder.COUNT_FIELD_NAME] = countValue;
             }
 
             JsonDocument response = executeQueryResult != null ? JsonDocument.Parse(executeQueryResult.ToString()) : null;
 
             return new Tuple<JsonDocument, IMetadata>(response, null);
+        }
+
+        /// <summary>
+        /// Resolves the value for the Connection-level `count` field. For
+        /// single-document lookups (id + partition key) the count is 0 or 1
+        /// and can be derived from the items query; for filter-based queries
+        /// we run a dedicated `SELECT VALUE COUNT(1)` against the same
+        /// predicates so the result is independent of pagination.
+        /// </summary>
+        private async Task<long> ResolveCountAsync(
+            CosmosQueryStructure structure,
+            Container container,
+            string partitionKeyValue,
+            string idValue)
+        {
+            if (!string.IsNullOrEmpty(partitionKeyValue) && !string.IsNullOrEmpty(idValue))
+            {
+                try
+                {
+                    await container.ReadItemAsync<JObject>(idValue, new PartitionKey(partitionKeyValue));
+                    return 1;
+                }
+                catch (CosmosException ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
+                {
+                    return 0;
+                }
+            }
+
+            QueryDefinition countSpec = new(_queryBuilder.BuildCount(structure));
+            foreach (KeyValuePair<string, DbConnectionParam> parameterEntry in structure.Parameters)
+            {
+                countSpec = countSpec.WithParameter(parameterEntry.Key, parameterEntry.Value.Value);
+            }
+
+            QueryRequestOptions options = new();
+            if (!string.IsNullOrEmpty(partitionKeyValue))
+            {
+                options.PartitionKey = new PartitionKey(partitionKeyValue);
+            }
+
+            using FeedIterator<long> iterator = container.GetItemQueryIterator<long>(countSpec, requestOptions: options);
+            long total = 0;
+            while (iterator.HasMoreResults)
+            {
+                FeedResponse<long> page = await iterator.ReadNextAsync();
+                foreach (long value in page)
+                {
+                    total += value;
+                }
+            }
+
+            return total;
+        }
+
+        /// <summary>
+        /// Builds an empty Connection-shaped JObject. Used when the caller only
+        /// asked for `count` (or other metadata) and no items query ran.
+        /// </summary>
+        private static JObject EmptyConnection()
+        {
+            return new JObject(
+                new JProperty(QueryBuilder.PAGINATION_TOKEN_FIELD_NAME, null),
+                new JProperty(QueryBuilder.HAS_NEXT_PAGE_FIELD_NAME, false),
+                new JProperty(QueryBuilder.PAGINATION_FIELD_NAME, new JArray()));
         }
 
         /// <summary>

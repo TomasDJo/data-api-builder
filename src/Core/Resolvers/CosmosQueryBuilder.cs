@@ -95,10 +95,34 @@ namespace Azure.DataApiBuilder.Core.Resolvers
             StringBuilder queryStringBuilder = new();
             queryStringBuilder.Append($"SELECT {WrappedColumns(structure)}"
                 + $" FROM {_containerAlias}");
-            string predicateString = Build(structure.Predicates);
+            AppendWhereClause(queryStringBuilder, structure);
 
+            if (structure.OrderByColumns.Count > 0)
+            {
+                queryStringBuilder.Append($" ORDER BY {Build(structure.OrderByColumns)}");
+            }
+
+            return queryStringBuilder.ToString();
+        }
+
+        /// <summary>
+        /// Builds a Cosmos SQL query that returns the total number of documents
+        /// matching the same filter/policy predicates as <see cref="Build(CosmosQueryStructure)"/>,
+        /// without materialising or paginating items. Used to satisfy the `count`
+        /// field on the *Connection return type.
+        /// </summary>
+        public string BuildCount(CosmosQueryStructure structure)
+        {
+            StringBuilder queryStringBuilder = new();
+            queryStringBuilder.Append($"SELECT VALUE COUNT(1) FROM {_containerAlias}");
+            AppendWhereClause(queryStringBuilder, structure);
+            return queryStringBuilder.ToString();
+        }
+
+        private void AppendWhereClause(StringBuilder queryStringBuilder, CosmosQueryStructure structure)
+        {
+            string predicateString = Build(structure.Predicates);
             structure.DbPolicyPredicatesForOperations.TryGetValue(EntityActionOperation.Read, out string? policy);
-            // If there is a predicate or policy, add a WHERE clause
             if (!string.IsNullOrEmpty(predicateString) || !string.IsNullOrEmpty(policy))
             {
                 queryStringBuilder
@@ -107,13 +131,6 @@ namespace Azure.DataApiBuilder.Core.Resolvers
                                 ? predicateString + policy
                                 : string.Join(" AND ", predicateString, policy));
             }
-
-            if (structure.OrderByColumns.Count > 0)
-            {
-                queryStringBuilder.Append($" ORDER BY {Build(structure.OrderByColumns)}");
-            }
-
-            return queryStringBuilder.ToString();
         }
 
         protected override string Build(Column column)

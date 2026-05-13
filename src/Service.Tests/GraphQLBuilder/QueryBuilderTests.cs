@@ -209,6 +209,55 @@ type Foo @model(name:""Foo"") {
             FieldDefinitionNode hasNextPageField = returnType.Fields.FirstOrDefault(f => f.Name.Value == "hasNextPage");
             Assert.IsNotNull(hasNextPageField, "hasNextPage field should exist");
             Assert.AreEqual("Boolean", hasNextPageField.Type.NamedType().Name.Value, "hasNextPage should be Boolean type");
+
+            // Verify count field exists for Cosmos NoSQL and is non-null Int.
+            // The Connection-level count returns the total number of documents
+            // matching the filter regardless of pagination.
+            FieldDefinitionNode countField = returnType.Fields.FirstOrDefault(f => f.Name.Value == QueryBuilder.COUNT_FIELD_NAME);
+            Assert.IsNotNull(countField, "count field should exist for CosmosDB_NoSQL");
+            Assert.AreEqual("Int!", countField.Type.ToString(), "count should be non-null Int");
+        }
+
+        /// <summary>
+        /// count is an additive Cosmos-only convenience. SQL providers should
+        /// not expose it on their Connection types; they have the larger
+        /// aggregation surface gated separately.
+        /// </summary>
+        [DataTestMethod]
+        [TestCategory("Query Generation")]
+        [TestCategory("Collection access")]
+        [DataRow(DatabaseType.MSSQL)]
+        [DataRow(DatabaseType.PostgreSQL)]
+        [DataRow(DatabaseType.MySQL)]
+        [DataRow(DatabaseType.DWSQL)]
+        public void CountFieldNotEmittedForSqlProviders(DatabaseType databaseType)
+        {
+            string gql =
+                @"
+type Foo @model(name:""Foo"") {
+    id: ID!
+}
+                ";
+
+            DocumentNode root = Utf8GraphQLParser.Parse(gql);
+            Dictionary<string, DatabaseType> entityNameToDatabaseType = new()
+            {
+                { "Foo", databaseType }
+            };
+            DocumentNode queryRoot = QueryBuilder.Build(
+                root,
+                entityNameToDatabaseType,
+                new(new Dictionary<string, Entity> { { "Foo", GraphQLTestHelpers.GenerateEmptyEntity() } }),
+                inputTypes: new(),
+                entityPermissionsMap: _entityPermissions
+                );
+
+            ObjectTypeDefinitionNode query = GetQueryNode(queryRoot);
+            string returnTypeName = query.Fields.First(f => f.Name.Value == $"foos").Type.NamedType().Name.Value;
+            ObjectTypeDefinitionNode returnType = queryRoot.Definitions.Where(d => d is ObjectTypeDefinitionNode).Cast<ObjectTypeDefinitionNode>().First(d => d.Name.Value == returnTypeName);
+
+            FieldDefinitionNode countField = returnType.Fields.FirstOrDefault(f => f.Name.Value == QueryBuilder.COUNT_FIELD_NAME);
+            Assert.IsNull(countField, $"count field should not be emitted for {databaseType}");
         }
 
         [TestMethod]

@@ -35,6 +35,20 @@ namespace Azure.DataApiBuilder.Core.Resolvers
 
         public bool IsPaginated { get; internal set; }
 
+        /// <summary>
+        /// True when the client selected the `count` field on the *Connection
+        /// return type. Triggers an extra `SELECT VALUE COUNT(1)` query alongside
+        /// (or instead of) the items query.
+        /// </summary>
+        public bool IsCountRequested { get; internal set; }
+
+        /// <summary>
+        /// True when the client selected the `items` field on the *Connection
+        /// return type. False means the caller only asked for metadata (count
+        /// and/or pagination flags) and the items query can be skipped.
+        /// </summary>
+        public bool IsItemsRequested { get; internal set; }
+
         public string Container { get; internal set; }
         public string Database { get; internal set; }
         public string? Continuation { get; internal set; }
@@ -47,6 +61,29 @@ namespace Azure.DataApiBuilder.Core.Resolvers
         public string GetTableAlias()
         {
             return $"table{TableCounter.Next()}";
+        }
+
+        /// <summary>
+        /// Returns true if the given top-level field name appears as a direct
+        /// selection on the supplied Connection field. Fragments are not
+        /// traversed; count is always emitted as a plain leaf field by clients.
+        /// </summary>
+        private static bool HasSelection(FieldNode connectionField, string fieldName)
+        {
+            if (connectionField.SelectionSet is null)
+            {
+                return false;
+            }
+
+            foreach (ISelectionNode node in connectionField.SelectionSet.Selections)
+            {
+                if (node is FieldNode field && field.Name.Value == fieldName)
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         public CosmosQueryStructure(
@@ -125,6 +162,13 @@ namespace Azure.DataApiBuilder.Core.Resolvers
             if (IsPaginated)
             {
                 FieldNode? fieldNode = ExtractQueryField(selection.SyntaxNode);
+
+                // Inspect the Connection selection set so we know which sub-queries
+                // are actually needed. count is requested explicitly; items is the
+                // default and is assumed when the caller asked for it OR when no
+                // recognised sub-field was selected (e.g. only endCursor).
+                IsCountRequested = HasSelection(selection.SyntaxNode, QueryBuilder.COUNT_FIELD_NAME);
+                IsItemsRequested = fieldNode is not null;
 
                 if (fieldNode is not null)
                 {
