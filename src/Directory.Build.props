@@ -5,11 +5,18 @@
     <Version>1.7</Version>
   </PropertyGroup>
 
+  <!-- NU1902 (transitive vulnerability advisory) stays a warning rather than an error.
+       We are pinned to release/1.7, so a newly-published advisory against a transitive
+       package would otherwise break CI and image builds mid-flight through no change of
+       ours. Same rationale as the Docker configuration in Azure.DataApiBuilder.Service.csproj.
+       Bump the affected package as a follow-up instead of suppressing the signal. -->
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|AnyCPU'">
     <TreatWarningsAsErrors>True</TreatWarningsAsErrors>
+    <WarningsNotAsErrors>NU1902</WarningsNotAsErrors>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|AnyCPU'">
     <TreatWarningsAsErrors>True</TreatWarningsAsErrors>
+    <WarningsNotAsErrors>NU1902</WarningsNotAsErrors>
   </PropertyGroup>
 </Project>
