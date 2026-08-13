@@ -1,0 +1,105 @@
+name: Tests
+
+# Reusable: called by build-image.yml so the published image is always gated on
+# green tests. Also runs directly on pull requests. Deliberately not wired to
+# `push` - build-image.yml already triggers on the feature branches we publish
+# from, and a push trigger here would run the same suite twice.
+on:
+  workflow_call:
+  pull_request:
+  workflow_dispatch:
+
+env:
+  DOTNET_VERSION: '8.0.x'
+  SOLUTION: src/Azure.DataApiBuilder.sln
+  # Verify launches a diff tool per failing snapshot. On a headless runner that is at
+  # best useless and at worst a hang, so keep it off and rely on the uploaded
+  # *.received.* artifacts instead.
+  DiffEngine_Disabled: 'true'
+
+jobs:
+  unit-tests:
+    name: Unit tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Restore
+        run: dotnet restore ${{ env.SOLUTION }}
+
+      - name: Build
+        run: dotnet build ${{ env.SOLUTION }} --no-restore -c Release
+
+      # Everything that does not need a live database. Mirrors the filter used by
+      # the upstream unit test pipeline in .pipelines/templates/build-pipelines.yml.
+      - name: Run unit tests
+        run: >
+          dotnet test ${{ env.SOLUTION }} --no-build -c Release --verbosity normal
+          --filter "TestCategory!=CosmosDb_NoSql&TestCategory!=MsSql&TestCategory!=PostgreSql&TestCategory!=MySql&TestCategory!=DwSql"
+
+  cosmos-tests:
+    name: Cosmos DB NoSQL integration tests
+    runs-on: ubuntu-latest
+
+    # The test config (src/Service.Tests/dab-config.CosmosDb_NoSql.json) points at
+    # https://localhost:8081 with the emulator's well-known account key, so the
+    # service container needs no further wiring.
+    services:
+      cosmosdb:
+        image: mcr.microsoft.com/cosmosdb/linux/azure-cosmos-emulator:vnext-latest
+        ports:
+          - 8081:8081
+        env:
+          PROTOCOL: https
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      # The .NET Cosmos SDK has no HTTP mode against the emulator, so the emulator's
+      # self-signed certificate has to be trusted before any client can connect.
+      - name: Trust the emulator certificate
+        run: |
+          sudo apt-get update && sudo apt-get install -y openssl
+          for attempt in $(seq 1 30); do
+            if openssl s_client -connect localhost:8081 </dev/null 2>/dev/null \
+                 | sed -ne '/-BEGIN CERTIFICATE-/,/-END CERTIFICATE-/p' > cosmos_emulator.crt \
+               && [ -s cosmos_emulator.crt ]; then
+              echo "Emulator certificate retrieved on attempt $attempt"
+              break
+            fi
+            echo "Waiting for the Cosmos emulator to accept connections ($attempt/30)"
+            sleep 10
+          done
+          test -s cosmos_emulator.crt || { echo "Cosmos emulator never came up"; exit 1; }
+          sudo cp cosmos_emulator.crt /usr/local/share/ca-certificates/
+          sudo update-ca-certificates
+
+      - name: Restore
+        run: dotnet restore ${{ env.SOLUTION }}
+
+      - name: Build
+        run: dotnet build ${{ env.SOLUTION }} --no-restore -c Release
+
+      - name: Run Cosmos DB NoSQL integration tests
+        run: >
+          dotnet test ${{ env.SOLUTION }} --no-build -c Release --verbosity normal
+          --filter "TestCategory=CosmosDb_NoSql"
+
+      # Verify's *.received files are the only useful artifact when a snapshot test
+      # fails, and they are gone once the runner is torn down.
+      - name: Upload Verify received files
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verify-received
+          path: '**/*.received.*'
+          if-no-files-found: ignore
