@@ -12,7 +12,13 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
+  # Gate the published image on the test suite. Anything tagged here is a
+  # candidate for the dev environment, so it should never ship red.
+  tests:
+    uses: ./.github/workflows/test.yml
+
   build:
+    needs: tests
     runs-on: ubuntu-latest
     permissions:
       contents: read
