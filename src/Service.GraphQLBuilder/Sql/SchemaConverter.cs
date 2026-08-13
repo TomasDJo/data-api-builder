@@ -270,7 +270,15 @@ namespace Azure.DataApiBuilder.Service.GraphQLBuilder.Sql
         /// <param name="entityName"></param>
         /// <param name="entityNode"></param>
         /// <returns></returns>
-        public static ObjectTypeDefinitionNode GenerateAggregationTypeForEntity(string entityName, ObjectTypeDefinitionNode entityNode)
+        /// <param name="allowCountOnAnyScalarField">
+        /// When true, the `count` aggregation accepts any scalar field rather than only numeric
+        /// ones. Counting rows per group is the common case for a document store, where there is
+        /// often no numeric property that is guaranteed to be present on every document, and
+        /// restricting count to numerics would silently under-count. Widening the argument enum is
+        /// backwards compatible - the scalar fields enum is a superset of the numeric one - but it
+        /// is opt-in so the SQL providers keep the schema they already publish.
+        /// </param>
+        public static ObjectTypeDefinitionNode GenerateAggregationTypeForEntity(string entityName, ObjectTypeDefinitionNode entityNode, bool allowCountOnAnyScalarField = false)
         {
             string aggregationTypeName = GenerateObjectAggregationNodeName(entityName);
 
@@ -284,14 +292,19 @@ namespace Azure.DataApiBuilder.Service.GraphQLBuilder.Sql
             // Add numeric aggregation fields
             if (numericFields.Any())
             {
+                string numericFieldsEnum = EnumTypeBuilder.GenerateNumericAggregateFieldsEnumName(entityNode.Name.Value);
+                string countFieldsEnum = allowCountOnAnyScalarField
+                    ? EnumTypeBuilder.GenerateScalarFieldsEnumName(entityNode.Name.Value)
+                    : numericFieldsEnum;
+
                 string filterInputType = numericFields.Count == 1 ? $"{numericFields[0]}FilterInput" : GetCommonFilterInputType(numericFields);
                 aggregationFields.AddRange(new[]
                 {
-                    CreateNumericAggregationField(AggregationType.max.ToString(), FLOAT_TYPE, "Maximum value for numeric fields", entityNode, filterInputType),
-                    CreateNumericAggregationField(AggregationType.min.ToString(), FLOAT_TYPE, "Minimum value for numeric fields", entityNode, filterInputType),
-                    CreateNumericAggregationField(AggregationType.avg.ToString(), FLOAT_TYPE, "Average value", entityNode, filterInputType),
-                    CreateNumericAggregationField(AggregationType.sum.ToString(), FLOAT_TYPE, "Sum of values", entityNode, filterInputType),
-                    CreateNumericAggregationField(AggregationType.count.ToString(), INT_TYPE, "Count of numeric values", entityNode, filterInputType)
+                    CreateNumericAggregationField(AggregationType.max.ToString(), FLOAT_TYPE, "Maximum value for numeric fields", numericFieldsEnum, filterInputType),
+                    CreateNumericAggregationField(AggregationType.min.ToString(), FLOAT_TYPE, "Minimum value for numeric fields", numericFieldsEnum, filterInputType),
+                    CreateNumericAggregationField(AggregationType.avg.ToString(), FLOAT_TYPE, "Average value", numericFieldsEnum, filterInputType),
+                    CreateNumericAggregationField(AggregationType.sum.ToString(), FLOAT_TYPE, "Sum of values", numericFieldsEnum, filterInputType),
+                    CreateNumericAggregationField(AggregationType.count.ToString(), INT_TYPE, "Count of values", countFieldsEnum, filterInputType)
                 });
             }
 
@@ -311,14 +324,11 @@ namespace Azure.DataApiBuilder.Service.GraphQLBuilder.Sql
         /// <param name="operationName">The name of the aggregation operation (e.g., "sum", "avg").</param>
         /// <param name="returnType">The return type of the aggregation operation (e.g., "Float", "Int").</param>
         /// <param name="description">A description of the aggregation operation.</param>
-        /// <param name="entityNode">The GraphQL entity node that contains the numeric fields to be aggregated.</param>
+        /// <param name="inputTypeName">Name of the enum listing the fields this operation may target.</param>
         /// <param name="filterInputType">The input type used for filtering criteria in the aggregation operation.</param>
         /// <returns>A <see cref="FieldDefinitionNode"/> representing the numeric aggregation field in the GraphQL schema.</returns>
-        private static FieldDefinitionNode CreateNumericAggregationField(string operationName, string returnType, string description, ObjectTypeDefinitionNode entityNode, string filterInputType)
+        private static FieldDefinitionNode CreateNumericAggregationField(string operationName, string returnType, string description, string inputTypeName, string filterInputType)
         {
-            // Create an input type specific to this entity's numeric fields
-            string inputTypeName = EnumTypeBuilder.GenerateNumericAggregateFieldsEnumName(entityNode.Name.Value);
-
             return new FieldDefinitionNode(
                 location: null,
                 name: new NameNode(operationName),

@@ -119,6 +119,62 @@ namespace Azure.DataApiBuilder.Core.Resolvers
             return queryStringBuilder.ToString();
         }
 
+        /// <summary>
+        /// Builds a Cosmos SQL aggregate query for the `groupBy` field on the *Connection
+        /// return type, for example:
+        ///
+        ///   SELECT c.makeName AS makeName, COUNT(c.id) AS "count"
+        ///   FROM c WHERE c.year = @param0 GROUP BY c.makeName
+        ///
+        /// Reuses the same WHERE builder as the items query so filter and policy predicates
+        /// are identical. Note Cosmos allows no ORDER BY, OFFSET/LIMIT or HAVING alongside
+        /// GROUP BY - those are rejected during parsing in CosmosQueryStructure.
+        /// </summary>
+        public string BuildGroupBy(CosmosQueryStructure structure)
+        {
+            GroupByMetadata metadata = structure.GroupByMetadata;
+
+            List<string> groupingExpressions = metadata.Fields.Values
+                .Select(column => FormatPropertyAccess(_containerAlias, column.ColumnName))
+                .ToList();
+
+            List<string> projections = new();
+
+            // The grouping columns must be projected under the same name the caller selected
+            // them by, so the result rows can be split back into fields/aggregations.
+            foreach (KeyValuePair<string, Column> field in metadata.Fields)
+            {
+                projections.Add($"{FormatPropertyAccess(_containerAlias, field.Value.ColumnName)} AS {FormatAlias(field.Key)}");
+            }
+
+            foreach (AggregationOperation aggregation in metadata.Aggregations)
+            {
+                AggregationColumn column = aggregation.Column;
+                string target = FormatPropertyAccess(_containerAlias, column.ColumnName);
+                projections.Add($"{column.Type.ToString().ToUpperInvariant()}({target}) AS {FormatAlias(column.OperationAlias)}");
+            }
+
+            StringBuilder queryStringBuilder = new();
+            queryStringBuilder.Append($"SELECT {string.Join(", ", projections)} FROM {_containerAlias}");
+            AppendWhereClause(queryStringBuilder, structure);
+            queryStringBuilder.Append($" GROUP BY {string.Join(", ", groupingExpressions)}");
+
+            return queryStringBuilder.ToString();
+        }
+
+        /// <summary>
+        /// Formats a projection alias. Aggregation aliases default to the operation name
+        /// (count, max, min, sum, avg) which are all Cosmos reserved keywords, so the same
+        /// identifier rules that govern property access apply here and the alias is
+        /// double-quoted when a bare identifier would not parse.
+        /// </summary>
+        private static string FormatAlias(string alias)
+        {
+            return RequiresBracketNotation(alias)
+                ? $"\"{alias.Replace("\\", "\\\\").Replace("\"", "\\\"")}\""
+                : alias;
+        }
+
         private void AppendWhereClause(StringBuilder queryStringBuilder, CosmosQueryStructure structure)
         {
             string predicateString = Build(structure.Predicates);

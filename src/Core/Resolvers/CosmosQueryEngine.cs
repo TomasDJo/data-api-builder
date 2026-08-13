@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 #nullable disable
+using System.Net;
 using System.Text;
 using System.Text.Json;
 using Azure.DataApiBuilder.Auth;
@@ -11,6 +12,7 @@ using Azure.DataApiBuilder.Core.Models;
 using Azure.DataApiBuilder.Core.Services;
 using Azure.DataApiBuilder.Core.Services.Cache;
 using Azure.DataApiBuilder.Core.Services.MetadataProviders;
+using Azure.DataApiBuilder.Service.Exceptions;
 using Azure.DataApiBuilder.Service.GraphQLBuilder.Queries;
 using Azure.DataApiBuilder.Service.Services;
 using HotChocolate.Language;
@@ -35,7 +37,14 @@ namespace Azure.DataApiBuilder.Core.Resolvers
         private readonly DabCacheService _cache;
 
         /// <summary>
-        /// Constructor 
+        /// Upper bound on the number of groups a single grouped query may return. Cosmos cannot
+        /// paginate a GROUP BY, so the whole result set is materialised in memory; this keeps an
+        /// unbounded grouping (say, on a high-cardinality field) from exhausting the process.
+        /// </summary>
+        private const int MAX_GROUP_BY_RESULTS = 10000;
+
+        /// <summary>
+        /// Constructor
         /// </summary>
         public CosmosQueryEngine(
             CosmosClientProvider clientProvider,
@@ -77,12 +86,18 @@ namespace Azure.DataApiBuilder.Core.Resolvers
             (string idValue, string partitionKeyValue) = await GetIdAndPartitionKey(context, parameters, container, structure, metadataStoreProvider);
 
             // Skip the items query when the caller only asked for metadata on the
-            // Connection (e.g. just `count`). An empty Columns list would produce
-            // an invalid `SELECT  FROM c` statement, and the round-trip is wasted
-            // RUs regardless.
-            bool runItemsQuery = !structure.IsPaginated || structure.IsItemsRequested;
+            // Connection (e.g. just `count`), or when this is a grouped query and the
+            // aggregate query replaces it. An empty Columns list would produce an
+            // invalid `SELECT  FROM c` statement, and the round-trip is wasted RUs
+            // regardless.
+            bool runItemsQuery = !structure.IsGroupByRequested && (!structure.IsPaginated || structure.IsItemsRequested);
 
             JObject executeQueryResult = null;
+
+            if (structure.IsGroupByRequested)
+            {
+                executeQueryResult = await ResolveGroupByAsync(structure, container, partitionKeyValue, dataSourceName, runtimeConfig);
+            }
 
             if (runItemsQuery)
             {
@@ -128,6 +143,111 @@ namespace Azure.DataApiBuilder.Core.Resolvers
             JsonDocument response = executeQueryResult != null ? JsonDocument.Parse(executeQueryResult.ToString()) : null;
 
             return new Tuple<JsonDocument, IMetadata>(response, null);
+        }
+
+        /// <summary>
+        /// Runs the aggregate query behind the Connection-level `groupBy` field and shapes the
+        /// flat result rows into the { fields, aggregations } structure the GraphQL resolvers
+        /// expect - the same shape SqlPaginationUtil produces for the SQL providers.
+        ///
+        /// Cosmos cannot issue continuation tokens for a GROUP BY query, so every group is
+        /// drained in one call and the pagination fields are reported as a single complete page.
+        /// </summary>
+        private async Task<JObject> ResolveGroupByAsync(
+            CosmosQueryStructure structure,
+            Container container,
+            string partitionKeyValue,
+            string dataSourceName,
+            RuntimeConfig runtimeConfig)
+        {
+            string queryString = _queryBuilder.BuildGroupBy(structure);
+            QueryDefinition querySpec = new(queryString);
+
+            foreach (KeyValuePair<string, DbConnectionParam> parameterEntry in structure.Parameters)
+            {
+                querySpec = querySpec.WithParameter(parameterEntry.Key, parameterEntry.Value.Value);
+            }
+
+            QueryRequestOptions queryRequestOptions = new();
+            if (!string.IsNullOrEmpty(partitionKeyValue))
+            {
+                queryRequestOptions.PartitionKey = new PartitionKey(partitionKeyValue);
+            }
+
+            if (runtimeConfig.CanUseCache() && runtimeConfig.Entities[structure.EntityName].IsCachingEnabled)
+            {
+                DatabaseQueryMetadata queryMetadata = new(queryText: queryString, dataSource: dataSourceName, queryParameters: structure.Parameters);
+
+                return await _cache.GetOrSetAsync<JObject>(
+                    async () => await ExecuteGroupByQueryAsync(structure, querySpec, queryRequestOptions, container),
+                    queryMetadata,
+                    runtimeConfig.GetEntityCacheEntryTtl(entityName: structure.EntityName),
+                    runtimeConfig.GetEntityCacheEntryLevel(entityName: structure.EntityName));
+            }
+
+            return await ExecuteGroupByQueryAsync(structure, querySpec, queryRequestOptions, container);
+        }
+
+        /// <summary>
+        /// Drains the aggregate query and builds the Connection-shaped result. Fails loudly past
+        /// <see cref="MAX_GROUP_BY_RESULTS"/> rather than truncating - a silently shortened set of
+        /// aggregates reads as complete data and would be worse than an error.
+        /// </summary>
+        private static async Task<JObject> ExecuteGroupByQueryAsync(
+            CosmosQueryStructure structure,
+            QueryDefinition querySpec,
+            QueryRequestOptions queryRequestOptions,
+            Container container)
+        {
+            JArray groups = new();
+
+            using FeedIterator<JObject> iterator = container.GetItemQueryIterator<JObject>(querySpec, requestOptions: queryRequestOptions);
+            while (iterator.HasMoreResults)
+            {
+                FeedResponse<JObject> page = await iterator.ReadNextAsync();
+                foreach (JObject row in page)
+                {
+                    if (groups.Count >= MAX_GROUP_BY_RESULTS)
+                    {
+                        throw new DataApiBuilderException(
+                            message: $"The grouped query returned more than {MAX_GROUP_BY_RESULTS} groups. Narrow the filter or group on fewer fields.",
+                            statusCode: HttpStatusCode.BadRequest,
+                            subStatusCode: DataApiBuilderException.SubStatusCodes.BadRequest);
+                    }
+
+                    groups.Add(ShapeGroupByRow(row, structure.GroupByMetadata));
+                }
+            }
+
+            JObject connection = EmptyConnection();
+            connection[QueryBuilder.GROUP_BY_FIELD_NAME] = groups;
+            return connection;
+        }
+
+        /// <summary>
+        /// Splits one flat aggregate result row into its grouping fields and its aggregation
+        /// results, keyed by the aliases the query projected them under.
+        /// </summary>
+        private static JObject ShapeGroupByRow(JObject row, GroupByMetadata metadata)
+        {
+            JObject fields = new();
+            JObject aggregations = new();
+
+            foreach (JProperty property in row.Properties())
+            {
+                if (metadata.Fields.ContainsKey(property.Name))
+                {
+                    fields[property.Name] = property.Value;
+                }
+                else
+                {
+                    aggregations[property.Name] = property.Value;
+                }
+            }
+
+            return new JObject(
+                new JProperty(QueryBuilder.GROUP_BY_FIELDS_FIELD_NAME, fields),
+                new JProperty(QueryBuilder.GROUP_BY_AGGREGATE_FIELD_NAME, aggregations));
         }
 
         /// <summary>
