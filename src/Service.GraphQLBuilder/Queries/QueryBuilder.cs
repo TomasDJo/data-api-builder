@@ -35,6 +35,7 @@ namespace Azure.DataApiBuilder.Service.GraphQLBuilder.Queries
         // Define the enabled database types for aggregation
         public static readonly HashSet<DatabaseType> AggregationEnabledDatabaseTypes = new()
         {
+            DatabaseType.CosmosDB_NoSQL,
             DatabaseType.MSSQL,
             DatabaseType.DWSQL,
         };

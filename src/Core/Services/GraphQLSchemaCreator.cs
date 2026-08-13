@@ -245,38 +245,7 @@ namespace Azure.DataApiBuilder.Core.Services
 
                             if (_isAggregationEnabled)
                             {
-                                bool isAggregationEnumCreated = EnumTypeBuilder.GenerateAggregationNumericEnumForObjectType(node, enumTypes);
-                                bool isGroupByColumnsEnumCreated = EnumTypeBuilder.GenerateScalarFieldsEnumForObjectType(node, enumTypes);
-                                ObjectTypeDefinitionNode aggregationType;
-                                ObjectTypeDefinitionNode groupByEntityNode;
-
-                                // note: if aggregation enum is created, groupByColumnsEnum is also created as there would be scalar fields to groupby.
-                                if (isAggregationEnumCreated)
-                                {
-                                    // Both aggregation and group by columns enum types are created for the entity. GroupBy should include fields and aggregation subfields.
-                                    aggregationType = SchemaConverter.GenerateAggregationTypeForEntity(node.Name.Value, node);
-                                    groupByEntityNode = SchemaConverter.GenerateGroupByTypeForEntity(node.Name.Value, node);
-                                    IReadOnlyList<FieldDefinitionNode> groupByFields = groupByEntityNode.Fields;
-                                    string aggregationsTypeName = SchemaConverter.GenerateObjectAggregationNodeName(node.Name.Value);
-                                    FieldDefinitionNode aggregationNode = new(
-                                        location: null,
-                                        name: new NameNode(QueryBuilder.GROUP_BY_AGGREGATE_FIELD_NAME),
-                                        description: new StringValueNode($"Aggregations for {entityName}"),
-                                        arguments: new List<InputValueDefinitionNode>(),
-                                        type: new NamedTypeNode(new NameNode(aggregationsTypeName)),
-                                        directives: new List<DirectiveNode>()
-                                    );
-                                    List<FieldDefinitionNode> fieldDefinitionNodes = new(groupByFields) { aggregationNode };
-                                    groupByEntityNode = groupByEntityNode.WithFields(fieldDefinitionNodes);
-                                    objectTypes.Add(SchemaConverter.GenerateObjectAggregationNodeName(entityName), aggregationType);
-                                    objectTypes.Add(SchemaConverter.GenerateGroupByTypeName(entityName), groupByEntityNode);
-                                }
-                                else if (isGroupByColumnsEnumCreated)
-                                {
-                                    // only groupBy enum is created for the entity. GroupBy should include fields but not aggregations.
-                                    groupByEntityNode = SchemaConverter.GenerateGroupByTypeForEntity(entityName, node);
-                                    objectTypes.Add(SchemaConverter.GenerateGroupByTypeName(entityName), groupByEntityNode);
-                                }
+                                GenerateAggregationTypesForObjectType(node, objectTypes, enumTypes);
                             }
                         }
 
@@ -592,6 +561,61 @@ namespace Azure.DataApiBuilder.Core.Services
         }
 
         /// <summary>
+        /// Generates the companion types backing the `groupBy` field on an entity's *Connection type:
+        /// the scalar-fields enum used by the `fields:` argument, the numeric-aggregate fields enum,
+        /// {TypeName}Aggregations and {TypeName}GroupBy.
+        ///
+        /// Shared by the SQL and Cosmos schema generation paths so both expose an identical groupBy
+        /// surface. Names are derived from the GraphQL type name rather than the entity name because
+        /// that is what QueryBuilder.GenerateReturnType references when it emits the groupBy field;
+        /// the two differ whenever an entity configures a custom singular name or uses @model(name:).
+        /// </summary>
+        /// <param name="node">Object type definition of the entity to generate companion types for.</param>
+        /// <param name="objectTypes">Collection the generated object types are added to.</param>
+        /// <param name="enumTypes">Collection the generated enum types are added to.</param>
+        /// <param name="allowCountOnAnyScalarField">Widens the `count` aggregation to accept any scalar field. See SchemaConverter.GenerateAggregationTypeForEntity.</param>
+        private static void GenerateAggregationTypesForObjectType(
+            ObjectTypeDefinitionNode node,
+            Dictionary<string, ObjectTypeDefinitionNode> objectTypes,
+            Dictionary<string, EnumTypeDefinitionNode> enumTypes,
+            bool allowCountOnAnyScalarField = false)
+        {
+            string typeName = node.Name.Value;
+            bool isAggregationEnumCreated = EnumTypeBuilder.GenerateAggregationNumericEnumForObjectType(node, enumTypes);
+            bool isGroupByColumnsEnumCreated = EnumTypeBuilder.GenerateScalarFieldsEnumForObjectType(node, enumTypes);
+            ObjectTypeDefinitionNode aggregationType;
+            ObjectTypeDefinitionNode groupByEntityNode;
+
+            // note: if aggregation enum is created, groupByColumnsEnum is also created as there would be scalar fields to groupby.
+            if (isAggregationEnumCreated)
+            {
+                // Both aggregation and group by columns enum types are created for the entity. GroupBy should include fields and aggregation subfields.
+                aggregationType = SchemaConverter.GenerateAggregationTypeForEntity(typeName, node, allowCountOnAnyScalarField);
+                groupByEntityNode = SchemaConverter.GenerateGroupByTypeForEntity(typeName, node);
+                IReadOnlyList<FieldDefinitionNode> groupByFields = groupByEntityNode.Fields;
+                string aggregationsTypeName = SchemaConverter.GenerateObjectAggregationNodeName(typeName);
+                FieldDefinitionNode aggregationNode = new(
+                    location: null,
+                    name: new NameNode(QueryBuilder.GROUP_BY_AGGREGATE_FIELD_NAME),
+                    description: new StringValueNode($"Aggregations for {typeName}"),
+                    arguments: new List<InputValueDefinitionNode>(),
+                    type: new NamedTypeNode(new NameNode(aggregationsTypeName)),
+                    directives: new List<DirectiveNode>()
+                );
+                List<FieldDefinitionNode> fieldDefinitionNodes = new(groupByFields) { aggregationNode };
+                groupByEntityNode = groupByEntityNode.WithFields(fieldDefinitionNodes);
+                objectTypes.Add(aggregationsTypeName, aggregationType);
+                objectTypes.Add(SchemaConverter.GenerateGroupByTypeName(typeName), groupByEntityNode);
+            }
+            else if (isGroupByColumnsEnumCreated)
+            {
+                // only groupBy enum is created for the entity. GroupBy should include fields but not aggregations.
+                groupByEntityNode = SchemaConverter.GenerateGroupByTypeForEntity(typeName, node);
+                objectTypes.Add(SchemaConverter.GenerateGroupByTypeName(typeName), groupByEntityNode);
+            }
+        }
+
+        /// <summary>
         /// Generates the ObjectTypeDefinitionNodes and InputObjectTypeDefinitionNodes as part of GraphQL Schema generation for cosmos db.
         /// Each datasource in cosmos has a root file provided which is used to generate the schema.
         /// NOTE: DataSourceNames must be preFiltered to be cosmos datasources.
@@ -613,10 +637,31 @@ namespace Azure.DataApiBuilder.Core.Services
                 root = root is null ? currentNode : root.WithDefinitions(root.Definitions.Concat(currentNode.Definitions).ToImmutableList());
             }
 
+            // Companion types for the groupBy field. Unlike the SQL path these are not derived from
+            // database metadata - the Cosmos schema.gql is the only source of field information - so
+            // they are generated from the object type definitions the user supplied.
+            Dictionary<string, ObjectTypeDefinitionNode> aggregationObjectTypes = new();
+            Dictionary<string, EnumTypeDefinitionNode> enumTypes = new();
+
             IEnumerable<ObjectTypeDefinitionNode> objectNodes = root!.Definitions.Where(d => d is ObjectTypeDefinitionNode).Cast<ObjectTypeDefinitionNode>();
             foreach (ObjectTypeDefinitionNode node in objectNodes)
             {
                 InputTypeBuilder.GenerateInputTypesForObjectType(node, inputObjects);
+
+                // Only model types get a *Connection return type, so only they need groupBy companions.
+                // Nested types in the Cosmos schema (Star, Moon, ...) are reachable but not queryable
+                // on their own and would only add unreferenced types to the schema.
+                if (_isAggregationEnabled && GraphQLUtils.IsModelType(node))
+                {
+                    GenerateAggregationTypesForObjectType(node, aggregationObjectTypes, enumTypes, allowCountOnAnyScalarField: true);
+                }
+            }
+
+            if (aggregationObjectTypes.Count > 0 || enumTypes.Count > 0)
+            {
+                List<IDefinitionNode> generated = new(aggregationObjectTypes.Values);
+                generated.AddRange(enumTypes.Values);
+                root = root.WithDefinitions(root.Definitions.Concat(generated).ToImmutableList());
             }
 
             return root;
