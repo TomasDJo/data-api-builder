@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 using System.Collections.Generic;
+using System.Linq;
 using System.IO;
 using System.IO.Abstractions;
 using System.IO.Abstractions.TestingHelpers;
@@ -61,7 +62,27 @@ namespace Azure.DataApiBuilder.Service.Tests.GraphQLBuilder
             Assert.AreEqual(9, inputTypeObjects.Count, $"{nameof(InputObjectTypeDefinitionNode)} is invalid. input Type objects have not been created correctly.");
 
             // 11 input types generated for the 3 entity types in the schema.gql. IntFilter,StringFilter etc should not be duplicated.
-            Assert.AreEqual(13, root.Definitions.Count, $"{nameof(DocumentNode)}:Root is invalid. root definitions count does not match expected count.");
+            // The 8 definitions beyond the original 13 are the groupBy companions: for each of the two
+            // @model types (Character, Planet) a scalar fields enum, a numeric aggregate fields enum,
+            // an Aggregations type and a GroupBy type.
+            Assert.AreEqual(21, root.Definitions.Count, $"{nameof(DocumentNode)}:Root is invalid. root definitions count does not match expected count.");
+
+            // Assert on the identity of the generated types rather than the count alone, so an
+            // accidental duplicate or a missing type cannot pass by coincidence.
+            HashSet<string> definitionNames = root.Definitions
+                .OfType<NamedSyntaxNode>()
+                .Select(d => d.Name.Value)
+                .ToHashSet();
+
+            foreach (string modelType in new[] { "Character", "Planet" })
+            {
+                foreach (string suffix in new[] { "ScalarFields", "NumericAggregateFields", "Aggregations", "GroupBy" })
+                {
+                    Assert.IsTrue(
+                        definitionNames.Contains($"{modelType}{suffix}"),
+                        $"Expected generated type {modelType}{suffix} to be present in the Cosmos schema.");
+                }
+            }
         }
     }
 }
