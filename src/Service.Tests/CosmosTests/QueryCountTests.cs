@@ -135,6 +135,27 @@ namespace Azure.DataApiBuilder.Service.Tests.CosmosTests
         }
 
         /// <summary>
+        /// count + hasNextPage without items still runs the page query, so
+        /// hasNextPage reflects the remaining documents.
+        /// </summary>
+        [TestMethod]
+        public async Task TestCountWithPaginationFlags_NoItemsSelected()
+        {
+            string gqlQuery = @"{
+                planets(first: 2) {
+                    count
+                    hasNextPage
+                    endCursor
+                }
+            }";
+
+            JsonElement result = await ExecuteGraphQLRequestAsync(_graphQLQueryName, gqlQuery);
+            Assert.AreEqual(_seededDocCount, result.GetProperty("count").GetInt32());
+            Assert.IsTrue(result.GetProperty("hasNextPage").GetBoolean());
+            Assert.AreNotEqual(JsonValueKind.Null, result.GetProperty("endCursor").ValueKind);
+        }
+
+        /// <summary>
         /// Sanity check: queries that don't select count continue to work and
         /// don't include a count field in the response.
         /// </summary>

@@ -47,10 +47,15 @@ namespace Azure.DataApiBuilder.Core.Resolvers
 
         /// <summary>
         /// True when the client selected the `items` field on the *Connection
-        /// return type. False means the caller only asked for metadata (count
-        /// and/or pagination flags) and the items query can be skipped.
+        /// return type.
         /// </summary>
         public bool IsItemsRequested { get; internal set; }
+
+        /// <summary>
+        /// True when the client selected `hasNextPage` or `endCursor`. Both come from
+        /// the items query's continuation token, so that query has to run.
+        /// </summary>
+        public bool IsPageInfoRequested { get; internal set; }
 
         /// <summary>
         /// True when the client selected the `groupBy` field on the *Connection
@@ -184,11 +189,12 @@ namespace Azure.DataApiBuilder.Core.Resolvers
                 IsGroupByRequested = fieldNode?.Name.Value == QueryBuilder.GROUP_BY_FIELD_NAME;
 
                 // Inspect the Connection selection set so we know which sub-queries
-                // are actually needed. count is requested explicitly; items is the
-                // default and is assumed when the caller asked for it OR when no
-                // recognised sub-field was selected (e.g. only endCursor).
+                // are needed: the items query is skipped only when count is the sole
+                // thing selected (no items, hasNextPage or endCursor).
                 IsCountRequested = HasSelection(selectionFieldNode, QueryBuilder.COUNT_FIELD_NAME);
                 IsItemsRequested = fieldNode is not null && !IsGroupByRequested;
+                IsPageInfoRequested = HasSelection(selectionFieldNode, QueryBuilder.HAS_NEXT_PAGE_FIELD_NAME)
+                    || HasSelection(selectionFieldNode, QueryBuilder.PAGINATION_TOKEN_FIELD_NAME);
 
                 ObjectType realType = underlyingType.Fields[QueryBuilder.PAGINATION_FIELD_NAME].Type.NamedType<ObjectType>();
                 string entityName = MetadataProvider.GetEntityName(realType.Name);

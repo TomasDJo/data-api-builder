@@ -85,12 +85,11 @@ namespace Azure.DataApiBuilder.Core.Resolvers
             Container container = client.GetDatabase(structure.Database).GetContainer(structure.Container);
             (string idValue, string partitionKeyValue) = await GetIdAndPartitionKey(context, parameters, container, structure, metadataStoreProvider);
 
-            // Skip the items query when the caller only asked for metadata on the
-            // Connection (e.g. just `count`), or when this is a grouped query and the
-            // aggregate query replaces it. An empty Columns list would produce an
-            // invalid `SELECT  FROM c` statement, and the round-trip is wasted RUs
-            // regardless.
-            bool runItemsQuery = !structure.IsGroupByRequested && (!structure.IsPaginated || structure.IsItemsRequested);
+            // Skip the items query when the caller asked for nothing but `count` (it
+            // would be wasted RUs), or when this is a grouped query and the aggregate
+            // query replaces it. hasNextPage/endCursor need the items query.
+            bool countOnly = structure.IsPaginated && structure.IsCountRequested && !structure.IsItemsRequested && !structure.IsPageInfoRequested;
+            bool runItemsQuery = !structure.IsGroupByRequested && !countOnly;
 
             JObject executeQueryResult = null;
 

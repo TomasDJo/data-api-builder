@@ -216,6 +216,12 @@ namespace Azure.DataApiBuilder.Core.Resolvers
         /// </summary>
         private string WrappedColumns(CosmosQueryStructure structure)
         {
+            // No items selected (only hasNextPage/endCursor): project id so the statement is valid.
+            if (structure.Columns.Count == 0)
+            {
+                return FormatPropertyAccess(_containerAlias, "id");
+            }
+
             return string.Join(
                 ", ",
                 structure.Columns
