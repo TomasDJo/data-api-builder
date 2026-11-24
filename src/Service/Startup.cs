@@ -716,6 +716,9 @@ namespace Azure.DataApiBuilder.Service
                 // is available for both file-based and POST /configuration (hosted) scenarios.
                 // See docs/design/HC16-upgrade.md for the full rationale.
                 .ModifyOptions(options => options.LazyInitialization = true)
+                // HC16 enforces a default MaxFieldCost of 1000 that rejects queries which worked on HC15.
+                // DAB has no cost config; depth and pagination limits remain the guards.
+                .ModifyCostOptions(options => options.EnforceCostLimits = false)
                 .AddInstrumentation()
                 .AddType(new DateTimeType(new DateTimeOptions { ValidateInputFormat = !(graphQLRuntimeOptions?.EnableLegacyDateTimeScalar ?? true) }))
                 .AddHttpRequestInterceptor<DefaultHttpRequestInterceptor>()

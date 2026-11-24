@@ -130,6 +130,20 @@ query ($id: ID, $partitionKeyValue: String) {
         }
 
         /// <summary>
+        /// Hot Chocolate's cost analyzer (default MaxFieldCost 1000) is not enforced, so a
+        /// query whose estimated cost exceeds it still executes.
+        /// </summary>
+        [TestMethod]
+        public async Task QueryAboveHotChocolateDefaultCostLimitSucceeds()
+        {
+            // 150 aliased root list fields put the estimated field cost well above 1000.
+            string fields = string.Join(" ", Enumerable.Range(0, 150).Select(i => $"p{i}: planets(first: 1) {{ items {{ id }} }}"));
+            JsonElement response = await ExecuteGraphQLRequestAsync("p149", $"query {{ {fields} }}");
+
+            Assert.AreEqual(1, response.GetProperty(QueryBuilder.PAGINATION_FIELD_NAME).GetArrayLength());
+        }
+
+        /// <summary>
         /// Validates that a query with only __typename in the selection set
         /// returns the right type
         /// </summary>
