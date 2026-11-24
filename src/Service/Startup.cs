@@ -717,7 +717,7 @@ namespace Azure.DataApiBuilder.Service
                 // See docs/design/HC16-upgrade.md for the full rationale.
                 .ModifyOptions(options => options.LazyInitialization = true)
                 // HC16 enforces a default MaxFieldCost of 1000 that rejects queries which worked on HC15.
-                // DAB has no cost config; depth and pagination limits remain the guards.
+                // DAB has no cost config, so restore HC15 behaviour; rate limits upstream and max-page-size bound load.
                 .ModifyCostOptions(options => options.EnforceCostLimits = false)
                 .AddInstrumentation()
                 .AddType(new DateTimeType(new DateTimeOptions { ValidateInputFormat = !(graphQLRuntimeOptions?.EnableLegacyDateTimeScalar ?? true) }))
