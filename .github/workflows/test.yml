@@ -10,7 +10,9 @@ on:
   workflow_dispatch:
 
 env:
-  SOLUTION: src/Azure.DataApiBuilder.sln
+  # Test projects only: building the solution pulls in Aspire.AppHost, whose NuGet
+  # audit advisories fail a Release restore.
+  TEST_PROJECTS: src/Service.Tests src/Cli.Tests
   # Verify launches a diff tool per failing snapshot. On a headless runner that is at
   # best useless and at worst a hang, so keep it off and rely on the uploaded
   # *.received.* artifacts instead.
@@ -28,40 +30,25 @@ jobs:
         with:
           global-json-file: global.json
 
-      - name: Restore
-        run: dotnet restore ${{ env.SOLUTION }}
-
       - name: Build
-        run: dotnet build ${{ env.SOLUTION }} --no-restore -c Release
+        run: for p in $TEST_PROJECTS; do dotnet build $p -c Release; done
 
       # Everything that does not need a live database. Mirrors the filter used by
       # the upstream unit test pipeline in .pipelines/templates/build-pipelines.yml.
       - name: Run unit tests
         run: >
-          dotnet test ${{ env.SOLUTION }} --no-build -c Release --verbosity normal
+          for p in $TEST_PROJECTS; do dotnet test $p --no-build -c Release --verbosity normal
           --filter "TestCategory!=CosmosDb_NoSql&TestCategory!=MsSql&TestCategory!=PostgreSql&TestCategory!=MySql&TestCategory!=DwSql"
+          || exit 1; done
 
   cosmos-tests:
     name: Cosmos DB NoSQL integration tests
-    runs-on: ubuntu-latest
-    # Informational, not a gate. Upstream DAB's own suite does not run fully green, and the
-    # emulator adds its own flakiness on top, so a red run here should not block publishing an
-    # image. Read the result, don't let it stop the pipeline. Unit tests remain a hard gate.
-    continue-on-error: true
-
-    # The test config (src/Service.Tests/dab-config.CosmosDb_NoSql.json) points at
-    # https://localhost:8081 with the emulator's well-known account key, so the
-    # service container needs no further wiring.
-    services:
-      cosmosdb:
-        image: mcr.microsoft.com/cosmosdb/linux/azure-cosmos-emulator:vnext-latest
-        ports:
-          - 8081:8081
-          # Health probe endpoint. Required: the emulator regenerates its TLS certificate
-          # during startup, so the certificate must not be captured before it reports ready.
-          - 8080:8080
-        env:
-          PROTOCOL: https
+    # The preinstalled Windows emulator, as upstream's .pipelines/cosmos-pipelines.yml uses.
+    # The suite runs green against it, so this is a gate like the unit tests.
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
 
     steps:
       - uses: actions/checkout@v4
@@ -70,44 +57,21 @@ jobs:
         with:
           global-json-file: global.json
 
-      # Observed taking ~6 minutes on a GitHub runner. The gateway on 8081 starts
-      # accepting TLS connections long before this, which is why waiting on a successful
-      # handshake is not enough - the certificate served then is later replaced.
-      - name: Wait for the emulator to report ready
+      - name: Start the Cosmos DB emulator
         run: |
-          for attempt in $(seq 1 60); do
-            if curl -fsS --max-time 5 http://localhost:8080/ready >/dev/null 2>&1; then
-              echo "Emulator ready after $((attempt * 10))s"
-              exit 0
-            fi
-            echo "Waiting for the Cosmos emulator readiness probe ($attempt/60)"
-            sleep 10
-          done
-          echo "Cosmos emulator never became ready"
-          curl -sS --max-time 5 http://localhost:8080/status || true
-          exit 1
-
-      # The .NET Cosmos SDK has no HTTP mode against the emulator, so the emulator's
-      # self-signed certificate has to be trusted before any client can connect.
-      - name: Trust the emulator certificate
-        run: |
-          sudo apt-get update && sudo apt-get install -y openssl
-          openssl s_client -showcerts -connect localhost:8081 </dev/null 2>/dev/null \
-            | sed -ne '/-BEGIN CERTIFICATE-/,/-END CERTIFICATE-/p' > cosmos_emulator.crt
-          test -s cosmos_emulator.crt || { echo "Could not read the emulator certificate"; exit 1; }
-          echo "Captured $(grep -c 'BEGIN CERTIFICATE' cosmos_emulator.crt) certificate(s)"
-          sudo cp cosmos_emulator.crt /usr/local/share/ca-certificates/
-          sudo update-ca-certificates
-
-      - name: Restore
-        run: dotnet restore ${{ env.SOLUTION }}
+          Import-Module "$env:ProgramFiles\Azure Cosmos DB Emulator\PSModules\Microsoft.Azure.CosmosDB.Emulator"
+          Start-CosmosDbEmulator
+          foreach ($i in 1..60) {
+            try { Invoke-WebRequest https://localhost:8081 -SkipCertificateCheck -SkipHttpErrorCheck -TimeoutSec 5 | Out-Null; exit 0 } catch { Start-Sleep 10 }
+          }
+          throw "Cosmos emulator did not answer on https://localhost:8081"
 
       - name: Build
-        run: dotnet build ${{ env.SOLUTION }} --no-restore -c Release
+        run: dotnet build src/Service.Tests -c Release
 
       - name: Run Cosmos DB NoSQL integration tests
         run: >
-          dotnet test ${{ env.SOLUTION }} --no-build -c Release --verbosity normal
+          dotnet test src/Service.Tests --no-build -c Release --verbosity normal
           --filter "TestCategory=CosmosDb_NoSql"
 
       # Verify's *.received files are the only useful artifact when a snapshot test
