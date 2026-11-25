@@ -269,8 +269,12 @@ public class GQLFilterParser
                         }
                         else
                         {
-                            cosmosQueryStructure.DatabaseObject.Name = sourceName + "." + backingColumnName;
-                            cosmosQueryStructure.SourceAlias = sourceName + "." + backingColumnName;
+                            // Build the nested-object alias via FormatPropertyAccess so reserved
+                            // keywords (e.g. from, value) get bracket-quoted instead of producing
+                            // invalid SQL like c.from.owner.
+                            string nestedAlias = CosmosQueryBuilder.FormatPropertyAccess(sourceName, backingColumnName);
+                            cosmosQueryStructure.DatabaseObject.Name = nestedAlias;
+                            cosmosQueryStructure.SourceAlias = nestedAlias;
                             cosmosQueryStructure.EntityName = metadataProvider.GetEntityName(nestedFieldTypeName);
 
                             predicates.Push(new PredicateOperand(Parse(ctx,
@@ -374,7 +378,9 @@ public class GQLFilterParser
             queryStructure.Counter,
             predicatesForExistsQuery);
 
-        existsQuery.DatabaseObject.SchemaName = $"{queryStructure.SourceAlias}.{columnName}";
+        // Use FormatPropertyAccess so a reserved keyword in the column name (e.g. "from")
+        // gets bracket-quoted into the EXISTS subquery container alias.
+        existsQuery.DatabaseObject.SchemaName = CosmosQueryBuilder.FormatPropertyAccess(queryStructure.SourceAlias, columnName);
         existsQuery.DatabaseObject.Name = existsQuery.SourceAlias;
         existsQuery.EntityName = metadataProvider.GetEntityName(entityType);
 
@@ -693,9 +699,36 @@ public static class FieldFilterParser
         List<PredicateOperand> predicates = new();
 
         InputObjectType argumentObject = ExecutionHelper.InputObjectTypeFromIInputField(argumentSchema);
+
+        // caseInsensitive is a sibling modifier alongside operator fields (eq, contains, ...).
+        // Extract it up front so every operator on this filter input sees the same value.
+        bool caseInsensitive = false;
+        foreach (ObjectFieldNode field in fields)
+        {
+            if (field.Name.Value == "caseInsensitive")
+            {
+                object? ciValue = ExecutionHelper.ExtractValueFromIValueNode(
+                    value: field.Value,
+                    argumentSchema: argumentObject.Fields[field.Name.Value],
+                    variables: ctx.Variables);
+
+                if (ciValue is bool b)
+                {
+                    caseInsensitive = b;
+                }
+            }
+        }
+
         foreach (ObjectFieldNode field in fields)
         {
             string name = field.Name.ToString();
+
+            if (name == "caseInsensitive")
+            {
+                // Not an operator — already consumed above.
+                continue;
+            }
+
             object? value = ExecutionHelper.ExtractValueFromIValueNode(
                 value: field.Value,
                 argumentSchema: argumentObject.Fields[field.Name.Value],
@@ -713,10 +746,10 @@ public static class FieldFilterParser
             switch (name)
             {
                 case "eq":
-                    op = PredicateOperation.Equal;
+                    op = caseInsensitive ? PredicateOperation.CI_STRING_EQUALS : PredicateOperation.Equal;
                     break;
                 case "neq":
-                    op = PredicateOperation.NotEqual;
+                    op = caseInsensitive ? PredicateOperation.CI_NOT_STRING_EQUALS : PredicateOperation.NotEqual;
                     break;
                 case "lt":
                     op = PredicateOperation.LessThan;
@@ -744,6 +777,11 @@ public static class FieldFilterParser
                     {
                         op = PredicateOperation.ARRAY_CONTAINS;
                     }
+                    else if (caseInsensitive)
+                    {
+                        // Cosmos native CONTAINS(a, b, true) — no %...% wrapping.
+                        op = PredicateOperation.CI_CONTAINS;
+                    }
                     else
                     {
                         op = PredicateOperation.LIKE;
@@ -757,6 +795,10 @@ public static class FieldFilterParser
                     {
                         op = PredicateOperation.NOT_ARRAY_CONTAINS;
                     }
+                    else if (caseInsensitive)
+                    {
+                        op = PredicateOperation.CI_NOT_CONTAINS;
+                    }
                     else
                     {
                         op = PredicateOperation.NOT_LIKE;
@@ -766,14 +808,30 @@ public static class FieldFilterParser
 
                     break;
                 case "startsWith":
-                    op = PredicateOperation.LIKE;
-                    value = $"{EscapeLikeString((string)value)}%";
-                    lengthOverride = true;
+                    if (caseInsensitive)
+                    {
+                        op = PredicateOperation.CI_STARTS_WITH;
+                    }
+                    else
+                    {
+                        op = PredicateOperation.LIKE;
+                        value = $"{EscapeLikeString((string)value)}%";
+                        lengthOverride = true;
+                    }
+
                     break;
                 case "endsWith":
-                    op = PredicateOperation.LIKE;
-                    value = $"%{EscapeLikeString((string)value)}";
-                    lengthOverride = true;
+                    if (caseInsensitive)
+                    {
+                        op = PredicateOperation.CI_ENDS_WITH;
+                    }
+                    else
+                    {
+                        op = PredicateOperation.LIKE;
+                        value = $"%{EscapeLikeString((string)value)}";
+                        lengthOverride = true;
+                    }
+
                     break;
                 case "isNull":
                     processLiteral = false;

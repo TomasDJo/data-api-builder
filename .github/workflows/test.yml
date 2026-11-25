@@ -1,0 +1,85 @@
+name: Tests
+
+# Reusable: called by build-image.yml so the published image is always gated on
+# green tests. Also runs directly on pull requests. Deliberately not wired to
+# `push` - build-image.yml already triggers on the feature branches we publish
+# from, and a push trigger here would run the same suite twice.
+on:
+  workflow_call:
+  pull_request:
+  workflow_dispatch:
+
+env:
+  # Test projects only: building the solution pulls in Aspire.AppHost, whose NuGet
+  # audit advisories fail a Release restore.
+  TEST_PROJECTS: src/Service.Tests src/Cli.Tests
+  # Verify launches a diff tool per failing snapshot. On a headless runner that is at
+  # best useless and at worst a hang, so keep it off and rely on the uploaded
+  # *.received.* artifacts instead.
+  DiffEngine_Disabled: 'true'
+
+jobs:
+  unit-tests:
+    name: Unit tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Build
+        run: for p in $TEST_PROJECTS; do dotnet build $p -c Release; done
+
+      # Everything that does not need a live database. Mirrors the filter used by
+      # the upstream unit test pipeline in .pipelines/templates/build-pipelines.yml.
+      - name: Run unit tests
+        run: >
+          for p in $TEST_PROJECTS; do dotnet test $p --no-build -c Release --verbosity normal
+          --filter "TestCategory!=CosmosDb_NoSql&TestCategory!=MsSql&TestCategory!=PostgreSql&TestCategory!=MySql&TestCategory!=DwSql"
+          || exit 1; done
+
+  cosmos-tests:
+    name: Cosmos DB NoSQL integration tests
+    # The preinstalled Windows emulator, as upstream's .pipelines/cosmos-pipelines.yml uses.
+    # The suite runs green against it, so this is a gate like the unit tests.
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Start the Cosmos DB emulator
+        run: |
+          Import-Module "$env:ProgramFiles\Azure Cosmos DB Emulator\PSModules\Microsoft.Azure.CosmosDB.Emulator"
+          Start-CosmosDbEmulator
+          foreach ($i in 1..60) {
+            try { Invoke-WebRequest https://localhost:8081 -SkipCertificateCheck -SkipHttpErrorCheck -TimeoutSec 5 | Out-Null; exit 0 } catch { Start-Sleep 10 }
+          }
+          throw "Cosmos emulator did not answer on https://localhost:8081"
+
+      - name: Build
+        run: dotnet build src/Service.Tests -c Release
+
+      - name: Run Cosmos DB NoSQL integration tests
+        run: >
+          dotnet test src/Service.Tests --no-build -c Release --verbosity normal
+          --filter "TestCategory=CosmosDb_NoSql"
+
+      # Verify's *.received files are the only useful artifact when a snapshot test
+      # fails, and they are gone once the runner is torn down.
+      - name: Upload Verify received files
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verify-received
+          path: '**/*.received.*'
+          if-no-files-found: ignore

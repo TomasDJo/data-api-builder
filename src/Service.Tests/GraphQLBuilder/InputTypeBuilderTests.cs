@@ -67,5 +67,45 @@ type Publisher @model(name:""Publisher"") {
             Assert.AreEqual(4, publisherFilterInput.Fields.Count);
             Assert.IsTrue(publisherFilterInput.Fields.Any(f => f.Type.NamedType().Name.Value == "BookFilterInput"), "No field found for BookFilterInput");
         }
+
+        /// <summary>
+        /// HotChocolate fails the schema build with "InputObject has no fields
+        /// declared" if any auto-generated *OrderByInput is empty. A type whose
+        /// fields are all object-typed produces an empty OrderByInput because the
+        /// generator only emits scalar fields. The engine emits a synthetic
+        /// placeholder field so the input type is non-empty and the schema builds.
+        /// </summary>
+        [TestMethod]
+        public void OrderByInput_TypeWithOnlyObjectFields_GetsSyntheticPlaceholder()
+        {
+            string gql = @"
+type Inner @model(name:""Inner"") {
+    id: Int!
+    name: String
+}
+
+type Outer @model(name:""Outer"") {
+    a: Inner
+    b: Inner
+    c: Inner
+}
+";
+            DocumentNode root = Utf8GraphQLParser.Parse(gql);
+            Dictionary<string, InputObjectTypeDefinitionNode> inputTypes = new();
+            foreach (ObjectTypeDefinitionNode node in root.Definitions)
+            {
+                InputTypeBuilder.GenerateInputTypesForObjectType(node, inputTypes);
+            }
+
+            InputObjectTypeDefinitionNode outerOrderBy = inputTypes["OuterOrderByInput"];
+            Assert.AreEqual(1, outerOrderBy.Fields.Count, "Expected one synthetic placeholder field");
+            Assert.AreEqual("_dabPlaceholder", outerOrderBy.Fields[0].Name.Value);
+
+            // A type with scalar fields must NOT get the placeholder.
+            InputObjectTypeDefinitionNode innerOrderBy = inputTypes["InnerOrderByInput"];
+            Assert.IsFalse(innerOrderBy.Fields.Any(f => f.Name.Value == "_dabPlaceholder"),
+                "Placeholder leaked into a type that has real scalar fields");
+            Assert.AreEqual(2, innerOrderBy.Fields.Count);
+        }
     }
 }
